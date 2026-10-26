@@ -653,6 +653,32 @@ function Client:get_book_reviews(book_id, review_list_type, count)
     })
 end
 
+-- Personalized bookstore recommendations; pass the previous page's last
+-- books[].searchIdx as max_idx to continue paging.
+function Client:get_recommendations(count, max_idx)
+    local params = { count = count or 20 }
+    if max_idx ~= nil then
+        params.maxIdx = max_idx
+    end
+    return self:gateway("/book/recommend", params)
+end
+
+-- Books similar to the given title; session_id keeps one browsing session
+-- when paging with booksimilar.books[].idx as max_idx.
+function Client:get_similar_books(book_id, count, max_idx, session_id)
+    local params = {
+        bookId = book_id,
+        count = count or 20,
+    }
+    if max_idx ~= nil then
+        params.maxIdx = max_idx
+    end
+    if session_id and session_id ~= "" then
+        params.sessionId = session_id
+    end
+    return self:gateway("/book/similar", params)
+end
+
 function Client:get_progress(book_id)
     return self:gateway("/book/getprogress", { bookId = book_id })
 end

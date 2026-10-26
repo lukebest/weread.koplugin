@@ -146,6 +146,21 @@ class MockServer(ThreadingHTTPServer):
                 keyword = data.get("keyword", "")
                 return 200, dict(results=[dict(books=[dict(bookInfo=b) for b in BOOKS
                                                       if keyword in b["title"] or keyword in b["author"]])])
+            if api == "/book/recommend":
+                max_idx = int(data.get("maxIdx") or 0)
+                count = int(data.get("count") or 20)
+                page = [dict(b, searchIdx=i) for i, b in enumerate(BOOKS, 1) if i > max_idx][:count]
+                return 200, dict(books=page)
+            if api == "/book/similar":
+                if "bookId" not in data or not any(b["bookId"] == book_id for b in BOOKS):
+                    raise ValueError("missing or unknown bookId")
+                session_id = data.get("sessionId") or "mock-similar"
+                max_idx = int(data.get("maxIdx") or 0)
+                count = int(data.get("count") or 20)
+                others = [b for b in BOOKS if b["bookId"] != book_id]
+                page = [dict(idx=i, book=dict(bookInfo=b))
+                        for i, b in enumerate(others, 1) if i > max_idx][:count]
+                return 200, dict(booksimilar=dict(sessionId=session_id, books=page))
             if api == "/book/getprogress":
                 return 200, self.get_progress(book_id)
             if api == "/review/list":

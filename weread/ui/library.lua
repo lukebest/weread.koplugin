@@ -834,6 +834,14 @@ function M:showBookMenu(book)
         end),
     }
     local actions = {}
+    if not WeRead.is_mp_book(book_id) then
+        actions[#actions + 1] = {
+            text = _("Similar books"),
+            callback = self:safeCallback(_("Similar books"), function()
+                self:showSimilarBooks(book)
+            end),
+        }
+    end
     if has_cache then
         actions[#actions + 1] = {
             text = _("Clear book cache"),

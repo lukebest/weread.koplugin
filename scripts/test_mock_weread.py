@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from fetch_weread_epub import decode_content_shards, decode_style_shard, weread_e
-from mock_weread import BOOK_ID, CHAPTERS, MockServer, annotation, chapter_html, shards
+from mock_weread import BOOKS, BOOK_ID, CHAPTERS, MockServer, annotation, chapter_html, shards
 
 
 class MockTests(unittest.TestCase):
@@ -78,6 +78,23 @@ class MockTests(unittest.TestCase):
         self.request("/web/book/read", dict(b=weread_e(BOOK_ID), c=weread_e(2), ci=2, co=120, pr=25))
         _, progress = self.gateway("/book/getprogress", bookId=BOOK_ID)
         self.assertEqual(progress["book"]["chapterOffset"], 120)
+
+    def test_recommendations_and_similar_paging(self):
+        status, first = self.gateway("/book/recommend", count=10)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(first["books"]), 10)
+        self.assertEqual([b["bookId"] for b in first["books"]],
+                         [b["bookId"] for b in BOOKS[:10]])
+        _, second = self.gateway("/book/recommend", count=10, maxIdx=first["books"][-1]["searchIdx"])
+        self.assertEqual([b["bookId"] for b in second["books"]],
+                         [b["bookId"] for b in BOOKS[10:20]])
+        status, similar = self.gateway("/book/similar", bookId=BOOK_ID, count=5)
+        self.assertEqual(status, 200)
+        self.assertEqual(similar["booksimilar"]["sessionId"], "mock-similar")
+        self.assertEqual(len(similar["booksimilar"]["books"]), 5)
+        self.assertNotIn(BOOK_ID, [e["book"]["bookInfo"]["bookId"]
+                                   for e in similar["booksimilar"]["books"]])
+        self.assertEqual(self.gateway("/book/similar", bookId="unknown")[0], 400)
 
     def test_fault_once_delay_and_recovery(self):
         self.request("/__control", dict(match="/book/info", times=1, status=503, delay=0.02))

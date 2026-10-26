@@ -225,6 +225,7 @@ Mixin.apply(WeReadPlugin, {
     (require("weread.ui.cache")),
     (require("weread.ui.read_report")),
     (require("weread.ui.library")),
+    (require("weread.ui.recommendations")),
     (require("weread.ui.annotations_controller")),
     (require("weread.ui.xpointer_overlay_controller")),
     (require("weread.ui.annotation_sync_controller")),

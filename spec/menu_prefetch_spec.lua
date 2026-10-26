@@ -297,11 +297,24 @@ local main_items = host:getMainMenuItems()
 expect(main_items[#main_items] and main_items[#main_items].text == "Settings",
     "about is no longer present in the outer menu")
 for _, item in ipairs(main_items) do
-    if item.text == "Search" or item.text == "Reading statistics" then
+    if item.text == "Search" or item.text == "For you"
+        or item.text == "Reading statistics" then
         expect(item.keep_menu_open == true,
             item.text .. " keeps the main menu open while its dialog is shown")
     end
 end
+local for_you_found = false
+local for_you_index, search_index
+for index, item in ipairs(main_items) do
+    if item.text == "Search" then search_index = index end
+    if item.text == "For you" then
+        for_you_found = true
+        for_you_index = index
+    end
+end
+expect(for_you_found, "for-you entry is present in the main menu")
+expect(search_index and for_you_index == search_index + 1,
+    "for-you entry follows search in the main menu")
 
 local function menu_has(items, text)
     for _, item in ipairs(items or {}) do

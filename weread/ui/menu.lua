@@ -136,6 +136,13 @@ function M:getMainMenuItems()
             end),
         },
         {
+            text = _("For you"),
+            keep_menu_open = true,
+            callback = self:safeCallback(_("For you"), function()
+                self:showRecommendations()
+            end),
+        },
+        {
             text = _("Reading time report"),
             sub_item_table_func = function()
                 if not self:requireLogin(true, true) then
