@@ -28,6 +28,9 @@ local defaults = {
         upload_on_close = false,
         ask_on_conflict = true,
         upload_interval_minutes = 0,
+        -- Character-level position mapping; requires per-chapter rune counts
+        -- and stays off until the offset model is validated on-device.
+        precise_position = false,
     },
     cache = {
         download_book_images = true,

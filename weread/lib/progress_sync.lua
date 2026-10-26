@@ -63,6 +63,7 @@ function ProgressSync:new(options)
         get_chapters = options.get_chapters,
         refresh_catalog = options.refresh_catalog,
         get_file_context = options.get_file_context,
+        enrich_char_counts = options.enrich_char_counts,
         run_online = options.run_online,
         upload_position = options.upload_position,
         goto_fraction = options.goto_fraction,
@@ -141,6 +142,12 @@ function ProgressSync:_local_fraction()
     return nil
 end
 
+-- Drop the cached document context so the next capture rebuilds the
+-- position catalog (used when the mapping unit setting changes).
+function ProgressSync:clear_context()
+    self.document_context = nil
+end
+
 function ProgressSync:capture_local()
     local book_id = self.detect_book()
     if not book_id or is_mp_book(book_id) then
@@ -167,6 +174,20 @@ function ProgressSync:capture_local()
         if type(chapters) ~= "table" or #chapters == 0 then
             return nil, "catalog_unavailable"
         end
+        -- Precise mapping needs per-chapter rune counts; chapters without
+        -- cached sources keep the word-based catalog.
+        local position_unit
+        if self:_config().precise_position and self.enrich_char_counts then
+            local ok_enrich, enriched = pcall(
+                self.enrich_char_counts, book_id, chapters, book)
+            if ok_enrich and type(enriched) == "table" then
+                chapters = enriched
+                position_unit = "chars"
+            else
+                log("info", "precise position unavailable:",
+                    ok_enrich and tostring(enriched) or "enrich failed")
+            end
+        end
         local _index
         _index, current_chapter, is_full_book =
             self.get_file_context(book, path)
@@ -174,7 +195,9 @@ function ProgressSync:capture_local()
             book_id = book_id,
             book = book,
             chapters = chapters,
-            position_catalog = PositionMapper.catalog(chapters),
+            position_catalog = PositionMapper.catalog(chapters, {
+                unit = position_unit,
+            }),
             current_chapter = current_chapter,
             is_full_book = is_full_book == true,
             path = path,

@@ -368,6 +368,30 @@ function M:getSettingsMenuItems()
                                 end
                             end),
                     },
+                    {
+                        text = _("Precise position (experimental)"),
+                        keep_menu_open = true,
+                        check_callback_updates_menu = true,
+                        checked_func = function()
+                            return self.settings:get("sync").precise_position == true
+                        end,
+                        callback = self:safeCallback(_("Precise position (experimental)"),
+                            function(touchmenu_instance)
+                                local sync = self.settings:get("sync")
+                                sync.precise_position =
+                                    not (sync.precise_position == true)
+                                self.settings:set("sync", sync)
+                                self.settings:flush()
+                                -- Chapter contexts may carry new counts now.
+                                if self.progress_sync
+                                    and self.progress_sync.clear_context then
+                                    self.progress_sync:clear_context()
+                                end
+                                if touchmenu_instance then
+                                    touchmenu_instance:updateItems()
+                                end
+                            end),
+                    },
                 }
             end,
         },

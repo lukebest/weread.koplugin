@@ -23,25 +23,54 @@ local function chapter_words(chapter)
     )) or 0)
 end
 
-local function catalog(chapters)
+-- Characters counted on the decoded chapter text. Populated by the
+-- chapter-cache scan; nil (or missing on any chapter) keeps the mapper on
+-- word counts for the whole book.
+local function chapter_chars(chapter)
+    local raw = chapter
+        and (chapter.charCount or chapter.char_count or chapter.chars)
+    if raw == nil then return nil end
+    local value = tonumber(raw)
+    if value == nil or value < 0 then return nil end
+    return value
+end
+
+local function has_char_counts(chapters)
+    for _i, chapter in ipairs(type(chapters) == "table" and chapters or {}) do
+        if chapter_chars(chapter) == nil then
+            return false
+        end
+    end
+    return true
+end
+
+local function catalog(chapters, options)
+    options = options or {}
+    local use_chars = options.unit == "chars" and has_char_counts(chapters)
     local result = {
         chapters = {},
+        total = 0,
         total_words = 0,
         by_uid = {},
+        unit = use_chars and "chars" or "words",
     }
     for index, chapter in ipairs(type(chapters) == "table" and chapters or {}) do
         local words = chapter_words(chapter)
+        local chars = chapter_chars(chapter) or words
+        local size = use_chars and chars or words
         local item = {
             source = chapter,
             index = index,
             uid = chapter_uid(chapter),
             chapter_idx = chapter_idx(chapter),
             words = words,
-            before = result.total_words,
+            size = size,
+            before = result.total,
         }
-        item.after = item.before + words
+        item.after = item.before + size
         result.chapters[#result.chapters + 1] = item
-        result.total_words = item.after
+        result.total = item.after
+        result.total_words = result.total_words + words
         if item.uid ~= nil then
             result.by_uid[tostring(item.uid)] = item
         end
@@ -78,8 +107,8 @@ local function raw_field(value, ...)
     return nil
 end
 
-function PositionMapper.catalog(chapters)
-    return catalog(chapters)
+function PositionMapper.catalog(chapters, options)
+    return catalog(chapters, options)
 end
 
 function PositionMapper.normalize_remote(value, book_id, source, chapters)
@@ -117,14 +146,15 @@ function PositionMapper.normalize_remote(value, book_id, source, chapters)
     local item = remote.chapter_uid ~= nil
         and map.by_uid[tostring(remote.chapter_uid)] or nil
     if item and remote.has_chapter_offset
-        and item.words > 0 and map.total_words > 0 then
-        local offset = clamp(remote.chapter_offset, 0, item.words)
+        and item.size > 0 and map.total > 0 then
+        local offset = clamp(remote.chapter_offset, 0, item.size)
         remote.percent = clamp(
-            (item.before + offset) / map.total_words * 100,
+            (item.before + offset) / map.total * 100,
             0,
             100
         )
         remote.position_basis = "chapter_offset"
+        remote.position_unit = map.unit
     else
         remote.position_basis = "raw_percent"
     end
@@ -159,15 +189,15 @@ end
 
 function PositionMapper.local_to_remote(chapters, fraction, options)
     options = options or {}
-    local map = options.catalog or catalog(chapters)
-    if map.total_words <= 0 then return nil, "catalog_empty" end
+    local map = options.catalog or catalog(chapters, options)
+    if map.total <= 0 then return nil, "catalog_empty" end
     fraction = clamp(fraction, 0, 1)
 
     local selected
     local offset
     local overall_fraction
     if options.is_full_book then
-        local target = fraction * map.total_words
+        local target = fraction * map.total
         -- Cumulative word counts are nondecreasing. The first end strictly
         -- after the target also skips empty chapters at a boundary.
         local low, high = 1, #map.chapters
@@ -179,23 +209,23 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
         selected = map.chapters[low]
         if not selected then
             for index = #map.chapters, 1, -1 do
-                if map.chapters[index].words > 0 then
+                if map.chapters[index].size > 0 then
                     selected = map.chapters[index]
                     break
                 end
             end
         end
         if not selected then return nil, "catalog_empty" end
-        offset = clamp(math.floor(target - selected.before), 0, selected.words)
+        offset = clamp(math.floor(target - selected.before), 0, selected.size)
         overall_fraction = fraction
     else
         local uid = options.current_chapter_uid
         selected = uid ~= nil and map.by_uid[tostring(uid)] or nil
-        if not selected or selected.words <= 0 then
+        if not selected or selected.size <= 0 then
             return nil, "current_chapter_not_found"
         end
-        offset = clamp(math.floor(fraction * selected.words), 0, selected.words)
-        overall_fraction = (selected.before + offset) / map.total_words
+        offset = clamp(math.floor(fraction * selected.size), 0, selected.size)
+        overall_fraction = (selected.before + offset) / map.total
     end
 
     return {
@@ -204,8 +234,9 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
         chapter_uid = selected.uid,
         chapter_idx = selected.chapter_idx,
         chapter_offset = math.floor(offset),
-        chapter_fraction = selected.words > 0 and offset / selected.words or 0,
+        chapter_fraction = selected.size > 0 and offset / selected.size or 0,
         summary = tostring(options.summary or ""),
+        position_unit = map.unit,
         safe = true,
         is_full_book = options.is_full_book == true,
     }
@@ -214,7 +245,7 @@ end
 function PositionMapper.remote_to_local(chapters, remote, options)
     options = options or {}
     if type(remote) ~= "table" then return nil, "remote_invalid" end
-    local map = catalog(chapters)
+    local map = catalog(chapters, options)
     local target = remote.chapter_uid ~= nil
         and map.by_uid[tostring(remote.chapter_uid)] or nil
     local raw_percent = clamp(remote.percent, 0, 100) / 100
@@ -223,11 +254,11 @@ function PositionMapper.remote_to_local(chapters, remote, options)
 
     local has_offset = remote.has_chapter_offset ~= false
         and remote.chapter_offset ~= nil
-    if target and has_offset and target.words > 0 then
-        local offset = clamp(remote.chapter_offset, 0, target.words)
-        chapter_fraction = offset / target.words
-        if map.total_words > 0 then
-            overall_fraction = (target.before + offset) / map.total_words
+    if target and has_offset and target.size > 0 then
+        local offset = clamp(remote.chapter_offset, 0, target.size)
+        chapter_fraction = offset / target.size
+        if map.total > 0 then
+            overall_fraction = (target.before + offset) / map.total
         end
     end
 

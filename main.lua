@@ -3,6 +3,7 @@ local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
+local CharCounts = require("weread.lib.chapter_char_counts")
 local Client = require("weread.lib.client")
 local BackgroundWorker = require("weread.lib.background_worker")
 local Content = require("weread.lib.content")
@@ -167,6 +168,9 @@ function WeReadPlugin:init()
         end,
         get_file_context = function(book, path)
             return self:getChapterInfoFromFile(book, path)
+        end,
+        enrich_char_counts = function(book_id, chapters, book)
+            return CharCounts.enrich(self.settings, book_id, chapters)
         end,
         run_online = function(_kind, callback, run_options)
             return self:runOnlineTask(

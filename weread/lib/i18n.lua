@@ -371,6 +371,7 @@ local zh = {
     ["No offline reading time to report."] = "没有待补报的阅读时长。",
     ["Offline reports sent: %1, failed: %2."] = "补报成功：%1 条，失败：%2 条。",
     ["Offline reading time counts toward the day it is reported."] = "离线阅读时长计入补报当天的阅读统计。",
+    ["Precise position (experimental)"] = "精确进度（实验性）",
     ["Paste WeRead reader URL"] = "粘贴微信读书阅读链接",
     ["Parse"] = "解析",
     ["Parse reader URL"] = "解析阅读链接",
