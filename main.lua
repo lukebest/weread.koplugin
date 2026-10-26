@@ -17,6 +17,7 @@ local ProgressSync = require("weread.lib.progress_sync")
 local ProgressSyncDialog = require("weread.ui.progress_sync_dialog")
 local QRLogin = require("weread.lib.qr_login")
 local ReadReport = require("weread.lib.read_report")
+local ReadReportQueue = require("weread.lib.read_report_queue")
 local Settings = require("weread.lib.settings")
 local Updater = require("weread.lib.updater")
 local UpdaterUI = require("weread.ui.updater")
@@ -98,6 +99,7 @@ function WeReadPlugin:init()
         settings = self.settings,
         client = self.client,
         library_db = self.library_db,
+        queue = ReadReportQueue:new(self.settings),
         scheduler = UIManager,
         get_document = function()
             return self.ui and self.ui.document

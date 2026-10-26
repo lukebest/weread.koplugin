@@ -95,6 +95,19 @@ function M:getReadReportMenuItems()
                 self:onShowWeReadReportStatus()
             end),
         },
+        {
+            text_func = function()
+                local pending = self.read_report and self.read_report:pendingCount() or 0
+                return T(_("Pending offline reports: %1"), tostring(pending))
+            end,
+            keep_menu_open = true,
+            enabled_func = function()
+                return self.settings:get("read_report").offline_queue ~= false
+            end,
+            callback = self:safeCallback(_("Report offline time now"), function()
+                self:flushOfflineReadReports()
+            end),
+        },
     }
 end
 
@@ -157,6 +170,32 @@ function M:onShowWeReadReportStatus()
     end
     self:showInfo(msg)
     return true
+end
+
+-- Replay queued offline reading time on demand. Replayed time is credited
+-- to the upload day, which the result message spells out.
+function M:flushOfflineReadReports()
+    if not self:requireLogin(true, false) then
+        return
+    end
+    local rr = self.read_report
+    if not rr then
+        return
+    end
+    if rr:pendingCount() == 0 then
+        self:showInfo(_("No offline reading time to report."))
+        return
+    end
+    self:runNetworkAction(_("Report offline time"), function()
+        local sent, failed = rr:flush_all("manual")
+        local message = T(_("Offline reports sent: %1, failed: %2."),
+            tostring(sent), tostring(failed))
+        if sent > 0 then
+            message = message .. "\n"
+                .. _("Offline reading time counts toward the day it is reported.")
+        end
+        return message
+    end)
 end
 
 function M:getReportTargetMenuItems()

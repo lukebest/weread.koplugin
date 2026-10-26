@@ -51,6 +51,9 @@ local defaults = {
         book_title = "",
         interval_seconds = 30,
         report_on_open = true,
+        -- Queue reading time recorded while offline and replay it once
+        -- the network returns (credited to the upload day).
+        offline_queue = true,
     },
     thought_popup = {
         -- Thought popup height as a fraction of the screen height.

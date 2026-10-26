@@ -16,6 +16,12 @@ local JOB_POLL_INITIAL_SECONDS = 0.25
 local JOB_POLL_MAX_SECONDS = 2
 local JOB_TIMEOUT_SECONDS = 180
 local JOB_COLLECT_INTERVAL_SECONDS = 2
+-- Offline queue replay pacing: one blocking pipeline per scheduled step,
+-- a bounded batch per round, and a throttle on opportunistic triggers.
+local QUEUE_FLUSH_BATCH = 20
+local QUEUE_STEP_SECONDS = 0.2
+local QUEUE_NEXT_ROUND_SECONDS = 5
+local QUEUE_FLUSH_THROTTLE_SECONDS = 60
 
 -- Context fields that the subprocess sends back for the parent to persist.
 -- Mirrors the scalar reading-state fields stored by BookStore; the chapter
@@ -175,6 +181,7 @@ function ReadReport:new(options)
         settings = options.settings,
         client = options.client,
         library_db = options.library_db,
+        queue = options.queue,
         scheduler = options.scheduler,
         get_document = options.get_document,
         detect_book = options.detect_book,
@@ -278,6 +285,7 @@ function ReadReport:_record_success(result)
             "count=", self.count,
             "has_synckey=", type(result) == "table" and result.synckey ~= nil or false)
     end
+    self:maybe_flush_queue("report_success")
 end
 
 function ReadReport:_log_skip(reason)
@@ -398,7 +406,9 @@ end
 
 function ReadReport:on_resume()
     self.suspended = false
-    return self:maybe_start("resume")
+    local started = self:maybe_start("resume")
+    self:maybe_flush_queue("resume")
+    return started
 end
 
 function ReadReport:on_close_document()
@@ -494,6 +504,7 @@ function ReadReport:_precheck()
     end
     if not self.is_online() then
         self.state = "offline"
+        self:_enqueue_offline(book_id)
         self:_log_skip("offline")
         return false
     end
@@ -1142,6 +1153,196 @@ function ReadReport:upload_position(book_id, position, elapsed_seconds)
         end
     end
     return outcome.accepted == true, outcome
+end
+
+-- ------------------------------------------------------------------
+-- Offline queue: record reading time while offline, replay when online.
+-- ------------------------------------------------------------------
+
+-- Queue a tick that cannot be sent now. Mirrors the online skip semantics:
+-- when the position provider applies but has no verified position, the tick
+-- is dropped instead, because replaying a stale position would corrupt
+-- reading progress.
+function ReadReport:_enqueue_offline(book_id)
+    local queue = self.queue
+    if not queue or self:_config().offline_queue == false then
+        return
+    end
+    if not queue:available() then
+        return
+    end
+    local position
+    if type(self.position_provider) == "function" then
+        local ok, provided, _reason, applies = pcall(self.position_provider, book_id)
+        if ok then
+            if applies and not provided then
+                return
+            end
+            position = provided
+        end
+    end
+    local ok, err = pcall(function()
+        queue:enqueue(book_id, self:_interval(), position)
+    end)
+    if not ok then
+        log("warn", "read report offline enqueue failed:", tostring(err))
+    end
+end
+
+function ReadReport:pendingCount()
+    if not self.queue then
+        return 0
+    end
+    local ok, count = pcall(function()
+        return self.queue:count()
+    end)
+    return ok and tonumber(count) or 0
+end
+
+-- Replay queued offline reports as a scheduled chain: one blocking network
+-- pipeline per step keeps the UI loop responsive between entries.
+function ReadReport:maybe_flush_queue(reason)
+    if not self.queue or self.flushing then
+        return false
+    end
+    if self.job then
+        return false
+    end
+    if not self.settings:is_cookie_configured() then
+        return false
+    end
+    if not self.is_online() then
+        return false
+    end
+    local now = self.now()
+    if reason == "report_success"
+        and now - (self.last_queue_flush or 0) < QUEUE_FLUSH_THROTTLE_SECONDS then
+        return false
+    end
+    if self:pendingCount() == 0 then
+        return false
+    end
+    self.flushing = true
+    self.last_queue_flush = now
+    log("info", "read report queue flush started:", "reason=", reason or "unspecified")
+    self.scheduler:scheduleIn(0.1, function()
+        self:_flush_queue_batch(reason)
+    end)
+    return true
+end
+
+function ReadReport:_flush_queue_batch(reason)
+    local queue = self.queue
+    local entries = queue:peek_batch(QUEUE_FLUSH_BATCH)
+    local sent, failed = 0, 0
+    local step
+    step = function(index)
+        if index > #entries then
+            self.flushing = nil
+            local remaining = self:pendingCount()
+            log("info", "read report queue flush round finished:",
+                "reason=", reason or "unspecified",
+                "sent=", sent, "failed=", failed, "remaining=", remaining)
+            if failed == 0 and remaining > 0 then
+                self.scheduler:scheduleIn(QUEUE_NEXT_ROUND_SECONDS, function()
+                    self:maybe_flush_queue("queue_continue")
+                end)
+            end
+            return
+        end
+        local entry = entries[index]
+        local ok, outcome = pcall(function()
+            return self:_run_pipeline(entry.book_id, {
+                allow_renewal = self:_renewal_allowed(),
+                position = entry.position,
+                elapsed_seconds = entry.rt,
+            })
+        end)
+        if ok and outcome.accepted then
+            queue:delete(entry.id)
+            sent = sent + 1
+            if outcome.renew_attempted then
+                self.last_renew_attempt = self.now()
+            end
+            if type(outcome.book) == "table" then
+                pcall(function()
+                    self:_persist_context(tostring(entry.book_id), outcome.book)
+                end)
+            end
+        else
+            queue:mark_failed(entry.id, ok and outcome.error or tostring(outcome))
+            failed = failed + 1
+            local kind = ok and outcome.error_kind or "task"
+            -- Authentication, transport, and context failures need user or
+            -- network action; draining the rest now would only pile up
+            -- attempts on entries that cannot succeed yet.
+            if kind ~= "server" then
+                self.flushing = nil
+                log("warn", "read report queue flush stopped:",
+                    "kind=", tostring(kind), "sent=", sent, "failed=", failed)
+                return
+            end
+        end
+        self.scheduler:scheduleIn(QUEUE_STEP_SECONDS, function()
+            step(index + 1)
+        end)
+    end
+    step(1)
+end
+
+-- Synchronous full drain for the manual menu action; runs inside the
+-- network-task callback, where blocking work is the established pattern.
+-- Any failure ends the drain (each entry is counted at most once); the
+-- scheduled chain keeps retrying what is left on later triggers.
+function ReadReport:flush_all(reason)
+    local queue = self.queue
+    if not queue then
+        return 0, 0
+    end
+    local sent, failed = 0, 0
+    while self.is_online() do
+        local entries = queue:peek_batch(QUEUE_FLUSH_BATCH)
+        if #entries == 0 then
+            break
+        end
+        local batch_sent = 0
+        for _i, entry in ipairs(entries) do
+            local ok, outcome = pcall(function()
+                return self:_run_pipeline(entry.book_id, {
+                    allow_renewal = self:_renewal_allowed(),
+                    position = entry.position,
+                    elapsed_seconds = entry.rt,
+                })
+            end)
+            if ok and outcome.accepted then
+                queue:delete(entry.id)
+                sent = sent + 1
+                batch_sent = batch_sent + 1
+                if outcome.renew_attempted then
+                    self.last_renew_attempt = self.now()
+                end
+                if type(outcome.book) == "table" then
+                    pcall(function()
+                        self:_persist_context(tostring(entry.book_id), outcome.book)
+                    end)
+                end
+            else
+                queue:mark_failed(entry.id, ok and outcome.error or tostring(outcome))
+                failed = failed + 1
+                log("info", "read report queue manual flush finished:",
+                    "reason=", reason or "manual",
+                    "sent=", sent, "failed=", failed)
+                return sent, failed
+            end
+        end
+        if batch_sent == 0 then
+            break
+        end
+    end
+    log("info", "read report queue manual flush finished:",
+        "reason=", reason or "manual",
+        "sent=", sent, "failed=", failed)
+    return sent, failed
 end
 
 return ReadReport
